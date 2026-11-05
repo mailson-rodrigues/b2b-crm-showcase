@@ -1,0 +1,71 @@
+# Production/staging stack: PostgreSQL + Redis (Streams) + API + Worker (+ optional MinIO and Caddy).
+#   docker compose up -d --build
+#   docker compose --profile s3 --profile proxy up -d --build
+name: crm
+
+x-app: &app
+  build: .
+  env_file: .env
+  environment: &app-env
+    ENVIRONMENT: production
+    DATABASE_URL: postgresql+asyncpg://crm:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/crm
+    REDIS_URL: redis://redis:6379/0
+    RUN_WORKERS_IN_PROCESS: "false"   # event/job consumption runs in the `worker` service
+    SEED_DEMO_DATA: "false"
+  depends_on:
+    db: { condition: service_healthy }
+    redis: { condition: service_healthy }
+  restart: unless-stopped
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: crm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: crm
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U crm"], interval: 5s, timeout: 3s, retries: 10 }
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redisdata:/data]
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, timeout: 3s, retries: 10 }
+    restart: unless-stopped
+
+  api:
+    <<: *app
+    ports: ["8000:8000"]
+    environment:
+      <<: *app-env
+      WEB_CONCURRENCY: "2"
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "app.worker"]
+    healthcheck: { disable: true }
+
+  # --- Optional: local S3-compatible storage (in production use S3/GCS) ---
+  minio:
+    profiles: [s3]
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:-crm}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:?set MINIO_PASSWORD}
+    volumes: [miniodata:/data]
+    ports: ["9000:9000", "9001:9001"]
+
+  # --- Optional: automatic TLS (Let's Encrypt) and HTTP/2 ---
+  caddy:
+    profiles: [proxy]
+    image: caddy:2-alpine
+    ports: ["80:80", "443:443"]
+    volumes: ["./deploy/Caddyfile:/etc/caddy/Caddyfile:ro", caddydata:/data]
+    environment:
+      DOMAIN: "${DOMAIN:-localhost}"
+    depends_on: [api]
+
+volumes: { pgdata: {}, redisdata: {}, miniodata: {}, caddydata: {} }

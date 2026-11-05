@@ -1,0 +1,11 @@
+# Override for local/staging validation (DO NOT use in production): exposes PostgreSQL/Redis on 127.0.0.1
+# and enables the demo data and Meta in sandbox mode.
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --build
+services:
+  db:
+    ports: ["127.0.0.1:5432:5432"]
+  redis:
+    ports: ["127.0.0.1:6379:6379"]
+  api:
+    environment:
+      SEED_DEMO_DATA: "true"
